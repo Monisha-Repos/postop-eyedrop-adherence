@@ -426,3 +426,20 @@ FodyWeavers.xsd
 
 # Official VS Code C# Dev Kit Extension exclusion
 #*.lscache
+
+# ---------------------------------------------------------------------------
+# Eye Spy
+# ---------------------------------------------------------------------------
+# Secrets (examples are committed instead: .env.example, config_example.py)
+.env
+.env.local
+firmware/config.py
+
+# Python
+.venv/
+venv/
+.pytest_cache/
+
+# React app build output (node_modules/ is ignored above)
+app/dist/
+.DS_Store
