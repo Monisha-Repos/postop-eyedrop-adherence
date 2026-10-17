@@ -58,6 +58,71 @@ function AnalysisDetails({ analysis }) {
   );
 }
 
+function SavedEyePhoto({ api, analysisId }) {
+  const [imageUrl, setImageUrl] = useState("");
+  const [imageError, setImageError] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    let objectUrl = "";
+
+    async function loadPhoto() {
+      try {
+        const blob = await api.blob(
+          `/eye-analysis-history/${analysisId}/image`
+        );
+
+        if (cancelled) return;
+
+        objectUrl = URL.createObjectURL(blob);
+        setImageUrl(objectUrl);
+      } catch (err) {
+        if (!cancelled) {
+          setImageError(true);
+        }
+      }
+    }
+
+    loadPhoto();
+
+    return () => {
+      cancelled = true;
+      if (objectUrl) {
+        URL.revokeObjectURL(objectUrl);
+      }
+    };
+  }, [api, analysisId]);
+
+  if (imageError) {
+    return (
+      <p style={{ color: "#6b7280" }}>
+        No saved photo available for this entry.
+      </p>
+    );
+  }
+
+  if (!imageUrl) {
+    return <p>Loading photo...</p>;
+  }
+
+  return (
+    <img
+      src={imageUrl}
+      alt={`Saved eye photo ${analysisId}`}
+      style={{
+        display: "block",
+        width: "100%",
+        maxWidth: 320,
+        maxHeight: 240,
+        objectFit: "contain",
+        borderRadius: 10,
+        marginTop: 12,
+        marginBottom: 12
+      }}
+    />
+  );
+}
+
 export default function EyeAnalyzer({ api }) {
   const [file, setFile] = useState(null);
   const [preview, setPreview] = useState("");
@@ -140,6 +205,37 @@ export default function EyeAnalyzer({ api }) {
     await loadHistory();
   }
 
+  async function handleSavePhoto() {
+  if (!file || loading) return;
+
+  setLoading(true);
+  setError("");
+  setResult(null);
+
+  const formData = new FormData();
+  formData.append("image", file);
+
+  try {
+    const data = await api.post(
+      "/save-eye-photo",
+      formData
+    );
+
+    if (data.success) {
+      alert("Eye photo saved successfully!");
+
+      // Refresh history if it is visible
+      if (showHistory) {
+        await loadHistory();
+      }
+    }
+  } catch (err) {
+    setError(err.message || "Could not save eye photo.");
+  } finally {
+    setLoading(false);
+  }
+}
+
   async function handleAnalyze() {
     if (!file || loading) return;
 
@@ -221,6 +317,22 @@ export default function EyeAnalyzer({ api }) {
           }}
         >
           {loading ? "Analyzing Eye..." : "Analyze Eye"}
+        </button>
+
+        <button
+          type="button"
+          onClick={handleSavePhoto}
+          disabled={!file || loading}
+          style={{
+            ...buttonStyle,
+            background: "#16a34a",
+            opacity: !file || loading ? 0.6 : 1,
+            cursor: !file || loading
+              ? "not-allowed"
+              : "pointer"
+          }}
+        >
+          {loading ? "Please Wait..." : "Save Photo"}
         </button>
 
         <button
@@ -321,12 +433,23 @@ export default function EyeAnalyzer({ api }) {
                 Analysis #{item.id}
               </h4>
 
+              <SavedEyePhoto
+                api={api}
+                analysisId={item.id}
+              />
+
               <p>
                 <strong>Date: </strong>
                 {new Date(item.created_at).toLocaleString()}
               </p>
 
-              <AnalysisDetails analysis={item.analysis} />
+              {item.analysis ? (
+                <AnalysisDetails analysis={item.analysis} />
+              ) : (
+                <p>
+                  Photo saved successfully. No AI analysis performed.
+                </p>
+              )}
             </article>
           ))}
         </div>

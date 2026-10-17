@@ -5,6 +5,7 @@ Run from backend/:
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 """
 
+from fastapi.responses import Response
 import logging
 import json
 from contextlib import asynccontextmanager
@@ -330,3 +331,102 @@ def get_eye_analysis_history(
         "success": True,
         "history": history
     }
+
+@app.post("/save-eye-photo")
+async def save_eye_photo(
+    image: UploadFile = File(...),
+    user: User = Depends(current_user),
+    conn=Depends(get_conn),
+):
+    if user.role != "patient":
+        raise HTTPException(
+            status_code=403,
+            detail="Only patients can save eye photos"
+        )
+
+    if image.content_type not in ALLOWED_IMAGE_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail="Only JPEG, PNG, and WebP images are allowed"
+        )
+
+    try:
+        image_bytes = await image.read(MAX_IMAGE_BYTES + 1)
+    finally:
+        await image.close()
+
+    if not image_bytes:
+        raise HTTPException(
+            status_code=400,
+            detail="The image is empty"
+        )
+
+    if len(image_bytes) > MAX_IMAGE_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail="Image must be smaller than 5 MB"
+        )
+
+    try:
+        row = conn.execute(
+            """
+            INSERT INTO eye_analyses
+                (patient_id, analysis, image_data, image_type)
+            VALUES (%s, %s, %s, %s)
+            RETURNING id, created_at
+            """,
+            (
+                user.id,
+                None,
+                image_bytes,
+                image.content_type,
+            ),
+        ).fetchone()
+
+    except Exception:
+        log.exception("Failed to save eye photo")
+        raise HTTPException(
+            status_code=500,
+            detail="Could not save eye photo"
+        )
+
+    return {
+        "success": True,
+        "id": row["id"],
+        "created_at": row["created_at"].isoformat(),
+        "message": "Eye photo saved successfully",
+    }
+
+@app.get("/eye-analysis-history/{analysis_id}/image")
+def get_eye_analysis_image(
+    analysis_id: int,
+    user: User = Depends(current_user),
+    conn=Depends(get_conn),
+):
+    if user.role != "patient":
+        raise HTTPException(
+            status_code=403,
+            detail="Only patients can view eye photos"
+        )
+
+    row = conn.execute(
+        """
+        SELECT image_data, image_type
+        FROM eye_analyses
+        WHERE id = %s
+          AND patient_id = %s
+        """,
+        (analysis_id, user.id),
+    ).fetchone()
+
+    if not row or row["image_data"] is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Eye photo not found"
+        )
+
+    return Response(
+        content=bytes(row["image_data"]),
+        media_type=row["image_type"] or "application/octet-stream",
+        headers={"Cache-Control": "no-store"},
+    )
