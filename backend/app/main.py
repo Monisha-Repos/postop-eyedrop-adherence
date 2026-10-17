@@ -18,6 +18,13 @@ log = logging.getLogger("eyespy")
 async def lifespan(_: FastAPI):
     if config.DEV_AUTH_BYPASS:
         log.warning("DEV_AUTH_BYPASS is ON: 'Bearer dev:<sub>' tokens are accepted. Local demos only.")
+
+    missing = [name for name in ("DATABASE_URL",) if not getattr(config, name)]
+    if not config.DEV_AUTH_BYPASS:
+        missing += [name for name in ("AUTH0_DOMAIN", "AUTH0_AUDIENCE") if not getattr(config, name)]
+    if missing:
+        raise RuntimeError(f"Missing in backend/.env: {', '.join(missing)}")
+
     pool.open()
     yield
     pool.close()
