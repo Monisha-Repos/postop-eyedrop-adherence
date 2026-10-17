@@ -25,7 +25,7 @@ The project uses **Python, React (JS/JSX), HTML and CSS only**:
 - Postgres still needs SQL, but it lives only inside Python strings (`app/schema.py`, queries in `app/doses.py` and the routes). There are no `.sql` files.
 - Config and docs are JSON (`package.json`, `evals/cases.json`), `.env` files and Markdown.
 
-> **README needs updating:** the Tech stack table still says "Swift, SwiftUI (iPad)" and the Getting started / Repository structure sections are TODO. Sections 3 and 6 below have the content to paste in.
+> `README.md` has been updated to match: React web app, Python backend, MicroPython firmware, setup steps and repository structure.
 
 ---
 
@@ -338,3 +338,7 @@ Copy the table from `evals/results.md` into the README.
 5. **Replacements:** React web app (`app/`) for the iPad client, MicroPython (`firmware/main.py`) for the dock, and the schema moved from a `.sql` file into `backend/app/schema.py`. CORS added to the backend for the web app.
 6. **`.gitignore`:** added entries so secrets (`.env`, `.env.local`, `firmware/config.py`) and build output stay out of git.
 7. **Verification:** tests, Python compile check and `npm run build` all pass (see section 5). No git commits or pushes were made.
+8. **README.md** created in the repo from the original and updated:
+   - Architecture and tech stack now say React, Python/FastAPI and MicroPython.
+   - Added a dose-rules table, the guardrails step, the wiring pin map, Auth0 setup, real run commands, the repository structure and known limitations.
+   - Eval pass rates and the team list stay TODO.
