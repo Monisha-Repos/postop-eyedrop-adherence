@@ -8,6 +8,7 @@ from . import rules
 # idempotent anyway; this only avoids repeating them on every 15-second dock poll.
 _materialized: set[tuple[int, date]] = set()
 
+DUPLICATE_LIFT_WINDOW = timedelta(seconds=60)
 DOSE_SELECT = """
     SELECT d.id, d.scheduled_at, d.lifted_at, d.returned_at, d.flag,
            m.name AS medication, s.eye, s.drops
@@ -71,6 +72,19 @@ def sweep_missed(conn) -> None:
 
 def record_lift(conn, patient_id: int, lifted_at: datetime) -> dict:
     """Match a bottle lift to a pending dose and flag it. Returns {dose_id, flag}."""
+    # Ignore a repeated lift (e.g. the dock retrying after a WiFi hiccup).
+    recent = conn.execute(
+        """
+        SELECT id, flag FROM dose_events
+        WHERE patient_id = %s AND lifted_at IS NOT NULL
+          AND lifted_at BETWEEN %s AND %s
+        ORDER BY lifted_at DESC LIMIT 1
+        """,
+        (patient_id, lifted_at - DUPLICATE_LIFT_WINDOW, lifted_at + DUPLICATE_LIFT_WINDOW),
+    ).fetchone()
+    if recent:
+        return {"dose_id": recent["id"], "flag": recent["flag"]}
+
     rows = conn.execute(
         """
         SELECT id, scheduled_at FROM dose_events
