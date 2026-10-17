@@ -195,9 +195,16 @@ def analyze_eye_with_gemini(image_bytes, mime_type):
 @app.post("/analyze-eye")
 async def analyze_eye(
     image: UploadFile = File(...),
-    user: User = Depends(current_user)
+    user: User = Depends(current_user),
+    conn=Depends(get_conn),
 ):
-    """Analyze an uploaded eye image using Gemini."""
+    """Analyze an eye image and save the result for the patient."""
+
+    if user.role != "patient":
+        raise HTTPException(
+            status_code=403,
+            detail="Only patients can save eye analyses"
+        )
 
     if image.content_type not in ALLOWED_IMAGE_TYPES:
         raise HTTPException(
@@ -206,9 +213,7 @@ async def analyze_eye(
         )
 
     try:
-        image_bytes = await image.read(
-            MAX_IMAGE_BYTES + 1
-        )
+        image_bytes = await image.read(MAX_IMAGE_BYTES + 1)
     finally:
         await image.close()
 
@@ -230,20 +235,98 @@ async def analyze_eye(
             image_bytes,
             image.content_type
         )
-
-        return {
-            "success": True,
-            "analysis": result,
-            "disclaimer": (
-                "EyeSpy AI is an educational prototype, "
-                "not a medical diagnostic tool."
-            )
-        }
-
     except Exception:
         log.exception("Gemini eye analysis failed")
-
         raise HTTPException(
             status_code=502,
             detail="Eye analysis service unavailable"
         )
+
+    try:
+        # Save only the analysis text, not the uploaded photo.
+        row = conn.execute(
+            """
+            INSERT INTO eye_analyses (
+                patient_id,
+                analysis,
+                image_data,
+                image_type
+            )
+            VALUES (%s, %s, %s, %s)
+            RETURNING id, created_at
+            """,
+            (
+                user.id,
+                json.dumps(result) if isinstance(result, dict) else result,
+                image_bytes,
+                image.content_type
+            )
+        ).fetchone()
+    
+
+    except Exception:
+        log.exception("Saving eye analysis failed")
+        raise HTTPException(
+            status_code=500,
+            detail="Could not save eye analysis"
+        )
+
+    return {
+        "success": True,
+        "id": row["id"],
+        "created_at": row["created_at"].isoformat(),
+        "analysis": result,
+        "disclaimer": (
+            "EyeSpy AI is an educational prototype, "
+            "not a medical diagnostic tool."
+        )
+    }
+
+# ============================================
+# EYE ANALYSIS HISTORY
+# ============================================
+
+@app.get("/eye-analysis-history")
+def get_eye_analysis_history(
+    user: User = Depends(current_user),
+    conn=Depends(get_conn),
+):
+    """Get the signed-in patient's previous eye analyses."""
+
+    if user.role != "patient":
+        raise HTTPException(
+            status_code=403,
+            detail="Only patients can view eye analysis history"
+        )
+
+    rows = conn.execute(
+        """
+        SELECT id, analysis, created_at
+        FROM eye_analyses
+        WHERE patient_id = %s
+        ORDER BY created_at DESC, id DESC
+        LIMIT 50
+        """,
+        (user.id,)
+    ).fetchall()
+
+    history = []
+
+    for row in rows:
+        analysis = row["analysis"]
+
+        try:
+            analysis = json.loads(analysis)
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+        history.append({
+            "id": row["id"],
+            "analysis": analysis,
+            "created_at": row["created_at"].isoformat()
+        })
+
+    return {
+        "success": True,
+        "history": history
+    }

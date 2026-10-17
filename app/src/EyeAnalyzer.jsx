@@ -1,12 +1,74 @@
 
 import { useEffect, useState } from "react";
 
+const buttonStyle = {
+  padding: "12px 24px",
+  marginTop: 20,
+  marginRight: 10,
+  background: "#2563eb",
+  color: "white",
+  border: "none",
+  borderRadius: 8,
+  cursor: "pointer"
+};
+
+const disclaimer =
+  "EyeSpy AI is an educational prototype, not a medical diagnostic tool. " +
+  "Sudden vision changes, vision loss, or severe eye pain require urgent medical attention.";
+
+function AnalysisDetails({ analysis }) {
+  let data = analysis;
+
+  if (typeof data === "string") {
+    try {
+      data = JSON.parse(data);
+    } catch {
+      return <p style={{ whiteSpace: "pre-wrap" }}>{data}</p>;
+    }
+  }
+
+  if (!data || typeof data !== "object") {
+    return <p>No analysis details available.</p>;
+  }
+
+  return (
+    <div>
+      {[
+        ["Redness", data.redness],
+        ["Irritation", data.irritation],
+        ["Cloudiness", data.cloudiness],
+        ["Image Quality", data.image_quality],
+        ["Summary", data.summary],
+        ["Recommendation", data.recommendation]
+      ].map(([label, value]) => (
+        <p key={label}>
+          <strong>{label}: </strong>
+          {typeof value === "string"
+            ? value || "Not assessed"
+            : value == null
+              ? "Not assessed"
+              : JSON.stringify(value)}
+        </p>
+      ))}
+
+      <p style={{ fontSize: 12, marginTop: 20 }}>
+        {disclaimer}
+      </p>
+    </div>
+  );
+}
+
 export default function EyeAnalyzer({ api }) {
   const [file, setFile] = useState(null);
   const [preview, setPreview] = useState("");
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+
+  const [showHistory, setShowHistory] = useState(false);
+  const [history, setHistory] = useState([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState("");
 
   useEffect(() => {
     if (!file) {
@@ -52,6 +114,32 @@ export default function EyeAnalyzer({ api }) {
     setFile(selected);
   }
 
+  async function loadHistory() {
+    setHistoryLoading(true);
+    setHistoryError("");
+
+    try {
+      const data = await api.get("/eye-analysis-history");
+      setHistory(data.history || []);
+    } catch (err) {
+      setHistoryError(
+        err.message || "Could not load analysis history."
+      );
+    } finally {
+      setHistoryLoading(false);
+    }
+  }
+
+  async function handleToggleHistory() {
+    if (showHistory) {
+      setShowHistory(false);
+      return;
+    }
+
+    setShowHistory(true);
+    await loadHistory();
+  }
+
   async function handleAnalyze() {
     if (!file || loading) return;
 
@@ -63,14 +151,17 @@ export default function EyeAnalyzer({ api }) {
     formData.append("image", file);
 
     try {
-      // Reuse the existing authenticated API client.
-      // This requires api.post to support FormData.
       const data = await api.post(
         "/analyze-eye",
         formData
       );
 
       setResult(data.analysis);
+
+      // Refresh saved results if history is open.
+      if (showHistory) {
+        await loadHistory();
+      }
     } catch (err) {
       setError(err.message || "Analysis failed.");
     } finally {
@@ -116,24 +207,35 @@ export default function EyeAnalyzer({ api }) {
         />
       )}
 
-      <button
-        type="button"
-        onClick={handleAnalyze}
-        disabled={!file || loading}
-        style={{
-          padding: "12px 24px",
-          marginTop: 20,
-          background: "#2563eb",
-          color: "white",
-          border: "none",
-          borderRadius: 8,
-          cursor: !file || loading
-            ? "not-allowed"
-            : "pointer"
-        }}
-      >
-        {loading ? "Analyzing Eye..." : "Analyze Eye"}
-      </button>
+      <div>
+        <button
+          type="button"
+          onClick={handleAnalyze}
+          disabled={!file || loading}
+          style={{
+            ...buttonStyle,
+            opacity: !file || loading ? 0.6 : 1,
+            cursor: !file || loading
+              ? "not-allowed"
+              : "pointer"
+          }}
+        >
+          {loading ? "Analyzing Eye..." : "Analyze Eye"}
+        </button>
+
+        <button
+          type="button"
+          onClick={handleToggleHistory}
+          style={{
+            ...buttonStyle,
+            background: "#374151"
+          }}
+        >
+          {showHistory
+            ? "Hide Analysis History"
+            : "View Analysis History"}
+        </button>
+      </div>
 
       {error && (
         <p role="alert" style={{ color: "#dc2626" }}>
@@ -152,29 +254,81 @@ export default function EyeAnalyzer({ api }) {
             color: "#111827"
           }}
         >
-          <h3>Gemini AI Analysis</h3>
+          <h3>Latest Gemini AI Analysis</h3>
+          <AnalysisDetails analysis={result} />
+        </div>
+      )}
 
-          {[
-            ["Redness", result.redness],
-            ["Irritation", result.irritation],
-            ["Cloudiness", result.cloudiness],
-            ["Image Quality", result.image_quality],
-            ["Summary", result.summary],
-            ["Recommendation", result.recommendation]
-          ].map(([label, value]) => (
-            <p key={label}>
-              <strong>{label}: </strong>
-              {value || "Not assessed"}
-            </p>
-          ))}
+      {showHistory && (
+        <div
+          style={{
+            textAlign: "left",
+            marginTop: 30,
+            padding: 20,
+            borderRadius: 12,
+            background: "#1f2937",
+            color: "#ffffff"
+          }}
+        >
+          <h3>Eye Analysis History</h3>
 
-          <p style={{ fontSize: 12 }}>
-            EyeSpy AI is an educational prototype,
-            not a medical diagnostic tool.
-            Sudden vision changes, vision loss,
-            or severe eye pain require urgent
-            medical attention.
+          <p>
+            Review your previously saved eye analyses.
           </p>
+
+          <button
+            type="button"
+            onClick={loadHistory}
+            disabled={historyLoading}
+            style={{
+              ...buttonStyle,
+              marginTop: 5,
+              opacity: historyLoading ? 0.6 : 1
+            }}
+          >
+            {historyLoading
+              ? "Loading..."
+              : "Refresh History"}
+          </button>
+
+          {historyError && (
+            <p role="alert" style={{ color: "#fca5a5" }}>
+              {historyError}
+            </p>
+          )}
+
+          {!historyLoading &&
+            !historyError &&
+            history.length === 0 && (
+              <p>
+                No saved analyses yet.
+                Your successful eye analyses will appear here.
+              </p>
+            )}
+
+          {history.map((item) => (
+            <article
+              key={item.id}
+              style={{
+                background: "#f3f4f6",
+                color: "#111827",
+                padding: 20,
+                marginTop: 20,
+                borderRadius: 10
+              }}
+            >
+              <h4>
+                Analysis #{item.id}
+              </h4>
+
+              <p>
+                <strong>Date: </strong>
+                {new Date(item.created_at).toLocaleString()}
+              </p>
+
+              <AnalysisDetails analysis={item.analysis} />
+            </article>
+          ))}
         </div>
       )}
     </section>

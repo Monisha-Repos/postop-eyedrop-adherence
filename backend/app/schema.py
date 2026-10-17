@@ -9,6 +9,9 @@ inside a transaction block.
 STATEMENTS = [
     "CREATE EXTENSION IF NOT EXISTS timescaledb",
 
+        # Eye analysis history
+    
+
     # People. auth0_sub links a row to an Auth0 user (the token's "sub" claim).
     """
     CREATE TABLE IF NOT EXISTS providers (
@@ -29,6 +32,27 @@ STATEMENTS = [
         surgery_date  DATE
     )
     """,
+    """
+        CREATE TABLE IF NOT EXISTS eye_analyses (
+            id BIGSERIAL PRIMARY KEY,
+            patient_id INT NOT NULL REFERENCES patients(id) ON DELETE CASCADE,
+            analysis TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        """,
+            # Add image storage to existing eye analyses
+        """
+        ALTER TABLE eye_analyses
+        ADD COLUMN IF NOT EXISTS image_data BYTEA
+        """,
+        """
+        ALTER TABLE eye_analyses
+        ADD COLUMN IF NOT EXISTS image_type TEXT
+        """,
+        """
+        ALTER TABLE eye_analyses
+        ALTER COLUMN analysis DROP NOT NULL
+        """,
 
     # Prescriptions. A schedule is "this drop, this eye, this many drops".
     # Schedule steps hold the times per day for a date range, which is how a
