@@ -16,7 +16,8 @@ After cataract surgery, patients typically go home with several different eye dr
 ## What Eye Spy does
 
 - **Reminds:** the dock's LCD shows the next scheduled dose and tells the patient when it's time for their drops.
-- **Guides:** the patient presses a switch after each drop. The dock then counts down the safe wait before the second drop (red LED) and shows when it's ready (green LED).
+- **Guides:** the patient presses a switch after each drop. The dock then counts down the safe wait before the next drop (red LED) and shows when it's ready (green LED).
+- **Records:** each press is sent to the backend over WiFi and matched to the scheduled dose (on time, late, early), so it shows up in the app and on the provider dashboard.
 - **Encourages:** the iPad speaks a short, personalized reminder in a warm, grandparent-style sense of humor, generated with the Gemini API. Humor can be set to full, mild or off.
 - **Informs providers:** a provider view shows each patient's adherence over time (on time, late, too early, missed).
 - **Protects data:** Auth0 login with role-based access, so providers only see their own patients and patients only see their own data.
@@ -25,14 +26,14 @@ After cataract surgery, patients typically go home with several different eye dr
 
 ```mermaid
 flowchart TD
-    Box["Dock (ESP32, MicroPython)<br/>LCD, LEDs, confirm switch<br/>standalone, no WiFi"]
+    Box["Dock (ESP32, MicroPython)<br/>LCD, LEDs, confirm switch"] --> API
     App["iPad web app (React)<br/>patient + provider views"] --> API
     API["Backend API (Python, FastAPI)<br/>validates tokens, holds secrets"] --> Auth0["Auth0<br/>login, roles"]
     API --> Tiger["Tiger Data (PostgreSQL)<br/>dose-event hypertable"]
     API --> Gemini["Gemini API<br/>reminder script + TTS"]
 ```
 
-- The **dock** runs on its own: it has no WiFi and doesn't talk to the backend yet. The backend's `/device/*` endpoints are ready for a connected dock and can be tested with curl (see below).
+- The **dock** asks the backend every 15 seconds whether a dose is due (`GET /device/status`) and posts each confirmed drop (`POST /device/events`). Without a `config.py` it runs an offline demo instead (see [hardware/README.md](hardware/README.md)).
 - The **iPad app** is a single React web app, added to the iPad home screen so it opens full-screen. The view (patient or provider) depends on the user's Auth0 role.
 - The **backend** sits between everything, so API keys and database credentials never ship inside the app or the device.
 
@@ -197,12 +198,16 @@ Never commit real values. These files are listed in `.gitignore`.
    Open the printed URL. On the iPad, open it in Safari and choose **Share → Add to Home Screen**.
 3. **Dock:**
    ```bash
-   cd firmware
+   cd backend
+   python -m scripts.register_device  # once: links DEVICE_TOKEN to the demo patient's dock
+   cd ../firmware
+   copy config_example.py config.py   # WiFi (2.4 GHz), BACKEND_URL (laptop LAN IP), DEVICE_TOKEN
+   mpremote cp config.py :config.py
    mpremote cp main.py :main.py
    mpremote reset
-   mpremote repl                     # watch the console output
+   mpremote repl                      # watch the console output
    ```
-   The dock needs no WiFi or config file. Timings (`TIME_UNTIL_NEXT_DOSE`, `WAIT_BETWEEN_DROPS`) and the schedule are set at the top of `main.py`.
+   The backend must listen on the network (`--host 0.0.0.0`) for the dock to reach it. Leave out `config.py` to run the offline demo. Full steps: [hardware/README.md](hardware/README.md).
 
 > **iPad demos on a local network:** Auth0 login only works on HTTPS or `localhost`, not on `http://192.168.x.x`. For a local demo, set `VITE_DEV_BYPASS_SUB=auth0|demo-patient` in the app and `DEV_AUTH_BYPASS=true` in the backend. Otherwise host both the app and the backend on HTTPS. Never enable the bypass on a public server.
 
@@ -213,7 +218,7 @@ cd backend && python -m unittest discover -s tests -t .
 python evals/run_evals.py           # from the repo root; uses Gemini if GEMINI_API_KEY is set
 ```
 
-**Testing the backend's dock endpoints:** the current dock firmware doesn't call these, but you can act as a connected dock with curl:
+**Without the dock**, you can act as the dock with curl:
 
 ```bash
 curl -H "X-Device-Token: <DEVICE_TOKEN>" http://localhost:8000/device/status
@@ -233,8 +238,9 @@ curl -X POST -H "X-Device-Token: <DEVICE_TOKEN>" -H "Content-Type: application/j
 
 ## Known limitations
 
-- The dock is standalone: doses confirmed on it are not sent to the backend, so the app and provider dashboard don't see them.
-- The dock has no real-time clock. Its alarm fires after a fixed standby timer, and the schedule shown on the LCD is a fixed list in `main.py`, not the patient's prescription from the database.
+- The dock can't tell which bottle was used: a press is matched to whichever dose is due.
+- While the dock is checking the backend (up to ~5 s), a very quick switch press can be missed.
+- In the offline demo, the alarm fires after a fixed standby timer and nothing is saved.
 - The dock has no buzzer, so its alarm is visual only (LCD text).
 - Reminders in the app only play while the app is open.
 

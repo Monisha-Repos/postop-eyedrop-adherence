@@ -1,8 +1,7 @@
 """Endpoints for the patient view of the iPad app. A patient only ever sees their own data."""
 import uuid
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import Literal
-from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel
@@ -22,11 +21,6 @@ def _patient(conn, user: User) -> dict:
     return conn.execute(
         "SELECT id, first_name, timezone, humor_level FROM patients WHERE id = %s", (user.id,)
     ).fetchone()
-
-
-def _time_label(at: datetime, tz_name: str) -> str:
-    t = at.astimezone(ZoneInfo(tz_name))
-    return f"{t.hour % 12 or 12}:{t.minute:02d} {'AM' if t.hour < 12 else 'PM'}"
 
 
 def _refresh(conn, patient: dict) -> None:
@@ -55,7 +49,7 @@ def reminder(user: User = Depends(require_patient), conn=Depends(get_conn)):
     now = doses.now_utc()
     tz = patient["timezone"]
     upcoming = doses.next_dose(conn, patient["id"], now)
-    next_label = f"{upcoming['medication']} at {_time_label(upcoming['scheduled_at'], tz)}" if upcoming else None
+    next_label = f"{upcoming['medication']} at {doses.time_label(upcoming['scheduled_at'], tz)}" if upcoming else None
 
     dose = doses.due_dose(conn, patient["id"], now)
     flag = "due" if dose else None
@@ -80,7 +74,7 @@ def reminder(user: User = Depends(require_patient), conn=Depends(get_conn)):
             medication=dose["medication"],
             drops=dose["drops"],
             eye=dose["eye"],
-            time_label=_time_label(dose["scheduled_at"], tz),
+            time_label=doses.time_label(dose["scheduled_at"], tz),
             minutes_off=minutes_off,
             next_label=next_label,
             all_medications=[m["name"] for m in meds],

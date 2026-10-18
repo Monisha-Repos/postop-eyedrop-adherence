@@ -85,7 +85,8 @@ app/
     patient/            # PatientHome, PatientSettings, TodayList
     provider/           # ProviderHome, PatientDetail, AdherenceChart
 firmware/
-  main.py               # standalone dock: LCD, LEDs, confirm switch (no WiFi)
+  main.py               # dock: LCD, LEDs, confirm switch; online via WiFi or offline demo
+  config_example.py     # WiFi / backend URL / device token (copy to config.py)
 hardware/
   README.md             # pin map, wiring, enclosure notes
 evals/
@@ -200,8 +201,18 @@ Interactive docs are at `http://localhost:8000/docs` while the server runs.
 
 ### 4.8 Dock firmware (`firmware/main.py`)
 
-The firmware that runs on the dock is **standalone**: no WiFi, no backend calls. (The earlier networked version, which polled `/device/status` and posted lift events, was replaced because it was never used on the hardware. The backend's `/device/*` endpoints are kept for a future connected dock.)
+The team's LCD + confirm-switch firmware, with a WiFi connection to the backend added. The mode is picked at boot: **online** when `config.py` (WiFi, `BACKEND_URL`, `DEVICE_TOKEN`) is on the ESP32, otherwise the **offline demo**.
 
+**Online:**
+- Polls `GET /device/status` every 15 s. The backend decides when a dose is due and returns its medication, eye and drops, plus the next dose time pre-formatted for the LCD (the ESP32 has no clock or timezone).
+- While a dose is due, the LCD alternates "Time to take your eye drops!" and e.g. "Moxifloxacin / 1 drop, left eye". Every 60 s it re-checks, and goes back to standby if the dose stopped being due (missed).
+- Each switch press is sent as `POST /device/events` `{"event": "lifted", "age_ms": ...}`, so the existing lift-matching rules flag it on time / late / early. The result is shown on the LCD.
+- Presses that can't be sent are queued (max 16) and retried with their real age, so a WiFi drop doesn't lose or mistime them. 4xx responses are not retried.
+- After each drop: the red-LED countdown, then the next due drop (green LED) or "Dose Completed!".
+- `DUPLICATE_LIFT_WINDOW` in `doses.py` was cut from 60 s to 10 s so the second drop after the 20 s demo countdown isn't ignored as a retry.
+- Docks are registered with `python -m scripts.register_device`, which adds the `DEVICE_TOKEN` hash for the demo patient without re-seeding.
+
+**Offline demo** (unchanged from the team's script):
 - **Standby:** the LCD shows the next time from a fixed `DOCTOR_SCHEDULE` list, then waits `TIME_UNTIL_NEXT_DOSE` seconds (10 s for the demo). There is no real-time clock, so it doesn't wait for the actual time of day.
 - **Alarm:** the LCD shows "Time to take your eye drops!" until the patient presses the switch after drop 1.
 - **Wait between drops:** red LED on while the LCD counts down `WAIT_BETWEEN_DROPS` (20 s demo, 300 s = 5 min real).
@@ -298,7 +309,9 @@ mpremote reset
 mpremote repl                     # watch the logs
 ```
 
-**Testing the backend's dock endpoints:** the current firmware doesn't call them, but you can send a connected dock's requests by hand.
+For the online mode, see the setup steps in `hardware/README.md` (register the token, `config.py`, backend on `--host 0.0.0.0`).
+
+**Testing without the dock:** send the dock's requests by hand.
 
 ```bash
 curl -H "X-Device-Token: <DEVICE_TOKEN>" http://localhost:8000/device/status

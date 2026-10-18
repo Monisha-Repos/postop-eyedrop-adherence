@@ -8,7 +8,9 @@ from . import rules
 # idempotent anyway; this only avoids repeating them on every 15-second dock poll.
 _materialized: set[tuple[int, date]] = set()
 
-DUPLICATE_LIFT_WINDOW = timedelta(seconds=60)
+# A dock retry re-sends the same event with the same timestamp, so a short window is
+# enough. Keep it below the dock's wait between drops (20 s in the demo).
+DUPLICATE_LIFT_WINDOW = timedelta(seconds=10)
 DOSE_SELECT = """
     SELECT d.id, d.scheduled_at, d.lifted_at, d.returned_at, d.flag,
            m.name AS medication, s.eye, s.drops
@@ -20,6 +22,12 @@ DOSE_SELECT = """
 
 def now_utc() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def time_label(at: datetime, tz_name: str) -> str:
+    """Local wall-clock time, e.g. "2:00 PM"."""
+    t = at.astimezone(ZoneInfo(tz_name))
+    return f"{t.hour % 12 or 12}:{t.minute:02d} {'AM' if t.hour < 12 else 'PM'}"
 
 
 def local_today(tz_name: str) -> date:

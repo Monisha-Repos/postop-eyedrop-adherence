@@ -14,17 +14,27 @@ router = APIRouter(prefix="/device", tags=["device"])
 
 @router.get("/status")
 def status(device=Depends(current_device), conn=Depends(get_conn)):
-    """Polled every ~15 s. `dose_due` turns the red LED and alarm on."""
+    """Polled every ~15 s. `dose_due` starts the dock's alarm.
+
+    The dock has no clock or timezone, so the next dose time comes pre-formatted
+    for its LCD.
+    """
     now = doses.now_utc()
-    doses.ensure_doses(conn, device["patient_id"], device["timezone"])
+    tz = device["timezone"]
+    doses.ensure_doses(conn, device["patient_id"], tz)
     doses.sweep_missed(conn)
     conn.execute("UPDATE devices SET last_seen_at = %s WHERE id = %s", (now, device["id"]))
     due = doses.due_dose(conn, device["patient_id"], now)
+    upcoming = doses.next_dose(conn, device["patient_id"], now)
     return {
         "dose_due": due is not None,
         "dose_id": due["id"] if due else None,
         "medication": due["medication"] if due else None,
+        "eye": due["eye"] if due else None,
+        "drops": due["drops"] if due else None,
         "scheduled_at": due["scheduled_at"] if due else None,
+        "next_medication": upcoming["medication"] if upcoming else None,
+        "next_time": doses.time_label(upcoming["scheduled_at"], tz) if upcoming else None,
         "server_time": now,
     }
 
