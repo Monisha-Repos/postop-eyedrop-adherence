@@ -352,3 +352,121 @@ button {
   border-radius: 0.2rem;
   vertical-align: middle;
 }
+
+
+/* =====================================
+   EyeSpy AI - Dark Mode
+   ===================================== */
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --bg: #101c24;
+  --card: #1c2b35;
+  --text: #f1f7f7;
+  --muted: #b6c8cd;
+  --accent: #75d8c8;
+  --border: #40535d;
+}
+
+/* Main application background */
+:root[data-theme="dark"] body,
+:root[data-theme="dark"] #root {
+  background: #101c24;
+  color: #f1f7f7;
+}
+
+/* Dashboard */
+:root[data-theme="dark"] .patient {
+  background: #101c24 !important;
+  color: #f1f7f7 !important;
+}
+
+/* Dashboard cards */
+:root[data-theme="dark"] .patient > div > div {
+  background: #1c2b35 !important;
+  border-color: #40535d !important;
+}
+
+/* Headings and labels */
+:root[data-theme="dark"] .patient h1,
+:root[data-theme="dark"] .patient h2,
+:root[data-theme="dark"] .patient h3,
+:root[data-theme="dark"] .patient p,
+:root[data-theme="dark"] .patient label,
+:root[data-theme="dark"] .patient span,
+:root[data-theme="dark"] .patient strong {
+  color: #f1f7f7 !important;
+}
+
+/* Inputs and dropdowns */
+:root[data-theme="dark"] .patient input,
+:root[data-theme="dark"] .patient select,
+:root[data-theme="dark"] .patient textarea {
+  background: #253943 !important;
+  color: #ffffff !important;
+  border-color: #526872 !important;
+}
+
+/* Buttons */
+:root[data-theme="dark"] .patient button:not(.start-overlay) {
+  background: #267e77 !important;
+  color: #ffffff !important;
+  border-color: #526872 !important;
+}
+
+/* Opening screen */
+:root[data-theme="dark"] .start-overlay {
+  background: #101c24 !important;
+  color: #f1f7f7 !important;
+}
+
+/* Settings */
+:root[data-theme="dark"] .patient-header,
+:root[data-theme="dark"] .status-card {
+  color: #f1f7f7 !important;
+}
+
+
+/* EyeSpy dashboard header - final layout fix */
+
+.patient .patient-header {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) !important;
+  width: 100% !important;
+  gap: 18px !important;
+  align-items: start !important;
+  box-sizing: border-box !important;
+}
+
+.patient .patient-header > div:first-child {
+  min-width: 0 !important;
+  width: 100% !important;
+}
+
+.patient .patient-header > div:last-child {
+  display: flex !important;
+  width: 100% !important;
+  justify-content: flex-end !important;
+  flex-wrap: wrap !important;
+  gap: 12px !important;
+  box-sizing: border-box !important;
+}
+
+.patient .patient-header > div:last-child button {
+  position: static !important;
+  width: auto !important;
+  max-width: 100% !important;
+  min-width: 0 !important;
+  height: auto !important;
+  margin: 0 !important;
+  transform: none !important;
+  white-space: nowrap !important;
+  flex: 0 0 auto !important;
+}
+
+@media (max-width: 520px) {
+  .patient .patient-header > div:last-child {
+    justify-content: flex-start !important;
+  }
+}
