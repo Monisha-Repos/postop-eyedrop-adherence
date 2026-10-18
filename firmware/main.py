@@ -1,189 +1,178 @@
-# Eye Spy dock firmware (MicroPython on an ESP32 DevKit V1).
-#
-# What it does:
-#   * polls GET /device/status every 15 s; when a dose is due: red LED + beeps
-#   * watches the lift switch under the bottle cup; posts "lifted" / "returned"
-#   * the big button silences the alarm for the current dose
-#
-# MicroPython runs main.py automatically at boot. Wiring: see hardware/README.md.
-
+from machine import Pin, SoftI2C
 import time
 
-import network
-import requests  # bundled with MicroPython >= 1.20 (older builds: "import urequests as requests")
-from machine import PWM, Pin
+# ==========================================
+# HARDWARE PIN CONFIGURATION
+# ==========================================
+PIN_SWITCH = 13   # Micro Switch signal pin (D13)
+PIN_RED    = 25   # Red LED pin (D25)
+PIN_GREEN  = 26   # Green LED pin (D26)
+PIN_SDA    = 21   # LCD I2C SDA (D21)
+PIN_SCL    = 22   # LCD I2C SCL (D22)
 
-import config
+# ==========================================
+# TIMING & MEDICAL SCHEDULE CONFIGURATION
+# ==========================================
+# Safety waiting interval between drops (in seconds)
+WAIT_BETWEEN_DROPS = 20  # Set to 20 for demo, 300 for 5 minutes
 
-# ---- Pins ------------------------------------------------------------------
-led_green = Pin(25, Pin.OUT)            # waiting / all good
-led_red = Pin(26, Pin.OUT)              # dose due (blinks slowly when offline)
-buzzer = PWM(Pin(27), freq=880, duty_u16=0)
-lift_switch = Pin(14, Pin.IN, Pin.PULL_UP)    # to GND; 0 = bottle is in the cup
-silence_button = Pin(33, Pin.IN, Pin.PULL_UP)  # to GND
+# Standby time before next dose alarm triggers (in seconds for demo)
+TIME_UNTIL_NEXT_DOSE = 10  # Seconds to wait in standby before alarm
 
-# ---- Timing (ms) -------------------------------------------------------------
-POLL_MS = 15000          # status poll interval
-DEBOUNCE_MS = 50
-LIFT_CONFIRM_MS = 1500   # bottle must be out this long to count (ignores bumps)
-BEEP_EVERY_MS = 20000    # alarm repeat while a dose is due
-QUEUE_MAX = 16
+# Doctor's prescribed schedule list
+DOCTOR_SCHEDULE = ["08:00 AM", "02:00 PM", "08:00 PM"]
+current_dose_index = 0
 
-HEADERS = {"X-Device-Token": config.DEVICE_TOKEN}
+# Initialize GPIO Pins
+switch = Pin(PIN_SWITCH, Pin.IN, Pin.PULL_UP)
+led_red = Pin(PIN_RED, Pin.OUT)
+led_green = Pin(PIN_GREEN, Pin.OUT)
 
+# ==========================================
+# EMBEDDED LCD1602 I2C DRIVER (PCF8574)
+# ==========================================
+class LCD1602:
+    def __init__(self, sda_pin, scl_pin):
+        self.i2c = SoftI2C(scl=Pin(scl_pin), sda=Pin(sda_pin), freq=100000)
+        self.addr = None
+        for a in [0x27, 0x3F]:
+            try:
+                if a in self.i2c.scan():
+                    self.addr = a
+                    break
+            except Exception:
+                pass
+        if self.addr:
+            self._init_lcd()
+            print(f"[LCD] Connected at {hex(self.addr)}")
+        else:
+            print("[LCD] Device not found on I2C bus. Outputting to console.")
 
-class Dock:
-    def __init__(self):
-        self.dose_due = False
-        self.due_dose_id = None
-        self.silenced_dose_id = None
-        self.last_poll = None
-        self.last_beep = None
+    def _write_byte(self, data):
+        if self.addr:
+            try:
+                self.i2c.writeto(self.addr, bytes([data | 0x08]))
+            except Exception:
+                pass
 
-        present = lift_switch.value() == 0
-        self.bottle_present = present   # debounced state
-        self.raw_present = present
-        self.raw_changed_at = time.ticks_ms()
-        self.lift_started_at = 0
-        self.lift_reported = False
-        self.last_silence = 1
+    def _send_nibble(self, nibble, mode):
+        val = (nibble << 4) | mode
+        self._write_byte(val | 0x04)
+        time.sleep_us(500)
+        self._write_byte(val & ~0x04)
+        time.sleep_us(500)
 
-        # (event, ticks_ms) waiting for the backend; survives short WiFi drops.
-        self.queue = []
+    def _send_byte(self, val, mode):
+        self._send_nibble(val >> 4, mode)
+        self._send_nibble(val & 0x0F, mode)
 
-    # ---- Network -------------------------------------------------------------
-    def poll_status(self):
-        try:
-            r = requests.get(config.BACKEND_URL + "/device/status", headers=HEADERS, timeout=5)
-            if r.status_code == 200:
-                body = r.json()
-                self.dose_due = bool(body.get("dose_due"))
-                self.due_dose_id = body.get("dose_id")
-            else:
-                print("status failed:", r.status_code)
-            r.close()
-        except Exception as exc:
-            print("status error:", exc)
-
-    def send_event(self, event, at_ms):
-        # age_ms lets the backend timestamp the event without the dock needing a real clock.
-        age = time.ticks_diff(time.ticks_ms(), at_ms)
-        try:
-            r = requests.post(
-                config.BACKEND_URL + "/device/events",
-                json={"event": event, "age_ms": age},
-                headers=HEADERS,
-                timeout=5,
-            )
-            ok = r.status_code in (200, 422)  # 422 = malformed; drop instead of retrying forever
-            print("event", event, "->", r.status_code)
-            r.close()
-            return ok
-        except Exception as exc:
-            print("event error:", exc)
-            return False
-
-    def enqueue(self, event, at_ms):
-        if len(self.queue) >= QUEUE_MAX:
-            self.queue.pop(0)  # full: drop the oldest
-        self.queue.append((event, at_ms))
-
-    def flush_queue(self):
-        while self.queue and self.send_event(*self.queue[0]):
-            self.queue.pop(0)
-            self.last_poll = None  # poll right away so the LEDs update
-
-    # ---- Inputs --------------------------------------------------------------
-    def read_lift_switch(self):
-        now = time.ticks_ms()
-        present = lift_switch.value() == 0
-        if present != self.raw_present:
-            self.raw_present = present
-            self.raw_changed_at = now
-
-        # Accept a change only once the switch has been stable for DEBOUNCE_MS.
-        if self.raw_present != self.bottle_present and time.ticks_diff(now, self.raw_changed_at) >= DEBOUNCE_MS:
-            self.bottle_present = self.raw_present
-            if not self.bottle_present:
-                self.lift_started_at = self.raw_changed_at
-                self.lift_reported = False
-            elif self.lift_reported:
-                self.enqueue("returned", self.raw_changed_at)
-            # else: a short bump, ignored
-
-        # A lift counts once the bottle has been out for LIFT_CONFIRM_MS.
-        if (not self.bottle_present and not self.lift_reported
-                and time.ticks_diff(now, self.lift_started_at) >= LIFT_CONFIRM_MS):
-            self.enqueue("lifted", self.lift_started_at)
-            self.lift_reported = True
-            self.silenced_dose_id = self.due_dose_id  # they're taking it: stop beeping
-
-    def read_silence_button(self):
-        value = silence_button.value()
-        if self.last_silence == 1 and value == 0 and self.dose_due:
-            self.silenced_dose_id = self.due_dose_id
-            buzzer.duty_u16(0)
-        self.last_silence = value
-
-    # ---- Outputs -------------------------------------------------------------
-    def beep(self):
+    def _init_lcd(self):
+        time.sleep_ms(50)
         for _ in range(3):
-            buzzer.duty_u16(32768)
-            time.sleep_ms(180)
-            buzzer.duty_u16(0)
-            time.sleep_ms(80)
+            self._send_nibble(0x03, 0)
+            time.sleep_ms(5)
+        self._send_nibble(0x02, 0)
+        self._send_byte(0x28, 0)
+        self._send_byte(0x0C, 0)
+        self._send_byte(0x06, 0)
+        self.clear()
 
-    def update_outputs(self, online):
-        now = time.ticks_ms()
-        if not online:
-            led_green.value(0)
-            led_red.value((now // 1000) % 2)  # slow blink = no connection
+    def clear(self):
+        self._send_byte(0x01, 0)
+        time.sleep_ms(2)
+
+    def display(self, line1, line2=""):
+        print(f"\n[LCD] --------------------")
+        print(f"| {line1:<16} |")
+        print(f"| {line2:<16} |")
+        print(f"--------------------------")
+        if not self.addr:
             return
-        led_green.value(0 if self.dose_due else 1)
-        led_red.value(1 if self.dose_due else 0)
+        self.clear()
+        self._send_byte(0x80, 0)
+        for char in line1[:16]:
+            self._send_byte(ord(char), 1)
+        if line2:
+            self._send_byte(0xC0, 0)
+            for char in line2[:16]:
+                self._send_byte(ord(char), 1)
 
-        alarm_on = self.dose_due and self.due_dose_id != self.silenced_dose_id and self.bottle_present
-        if alarm_on and (self.last_beep is None or time.ticks_diff(now, self.last_beep) >= BEEP_EVERY_MS):
-            self.beep()
-            self.last_beep = now
-        if not self.dose_due:
-            self.last_beep = None
+lcd = LCD1602(PIN_SDA, PIN_SCL)
 
+def wait_for_switch_press():
+    """Wait for patient to press the micro switch to confirm a dose."""
+    while switch.value() == 1:
+        time.sleep_ms(50)
+    while switch.value() == 0:
+        time.sleep_ms(50)
+    time.sleep_ms(200)
 
-def connect_wifi(wlan, last_try):
-    """Starts a connection attempt at most every 10 s. Returns the time of the last attempt."""
-    now = time.ticks_ms()
-    if wlan.isconnected():
-        return last_try
-    if last_try is None or time.ticks_diff(now, last_try) >= 10000:
-        print("Connecting to WiFi...")
-        try:
-            wlan.connect(config.WIFI_SSID, config.WIFI_PASSWORD)
-        except OSError as exc:  # raised if a previous attempt is still in progress
-            print("wifi error:", exc)
-        return now
-    return last_try
+# ==========================================
+# MAIN CONTINUOUS HEALTHCARE WORKFLOW
+# ==========================================
+print("\n=== OFTACARE DISPENSER SYSTEM RUNNING ===")
 
+while True:
+    # ----------------------------------------------------
+    # STAGE 1: STANDBY (WAITING FOR SCHEDULED DOSE TIME)
+    # ----------------------------------------------------
+    led_red.value(0)
+    led_green.value(0)
 
-def main():
-    wlan = network.WLAN(network.STA_IF)
-    wlan.active(True)
-    dock = Dock()
-    last_wifi_try = None
+    next_time = DOCTOR_SCHEDULE[current_dose_index]
+    lcd.display("Next schedule:", next_time)
+    print(f"\n[STANDBY] Displaying next scheduled dose: {next_time}")
+    print(f"[STANDBY] Waiting {TIME_UNTIL_NEXT_DOSE} seconds until medication time arrives...")
 
-    while True:
-        last_wifi_try = connect_wifi(wlan, last_wifi_try)
-        dock.read_lift_switch()
-        dock.read_silence_button()
+    # Wait until scheduled time arrives automatically
+    time.sleep(TIME_UNTIL_NEXT_DOSE)
 
-        online = wlan.isconnected()
-        if online:
-            dock.flush_queue()
-            if dock.last_poll is None or time.ticks_diff(time.ticks_ms(), dock.last_poll) >= POLL_MS:
-                dock.poll_status()
-                dock.last_poll = time.ticks_ms()
-        dock.update_outputs(online)
-        time.sleep_ms(10)
+    # ----------------------------------------------------
+    # STAGE 2: AUTOMATIC ALARM (TIME FOR MEDICATION)
+    # ----------------------------------------------------
+    lcd.display("Time to take", "your eye drops!")
+    print("\n[ALARM] >>> TIME FOR EYE DROPS! <<<")
+    print("[ALARM] Waiting for patient to apply Drop 1 and press switch...")
 
+    # Patient applies Drop 1 and presses switch to confirm
+    wait_for_switch_press()
 
-main()
+    # ----------------------------------------------------
+    # STAGE 3: DROP 1 CONFIRMED -> COUNTDOWN INTERVAL
+    # ----------------------------------------------------
+    led_red.value(1)    # Red LED ON: absorption wait active
+    led_green.value(0)
+    print("\n[INTERVAL] Drop 1 confirmed. Starting safety countdown...")
+
+    for remaining in range(WAIT_BETWEEN_DROPS, 0, -1):
+        mins = remaining // 60
+        secs = remaining % 60
+        lcd.display("Drop 1 applied!", "Wait: {:02d}:{:02d} min".format(mins, secs))
+        time.sleep(1)
+
+    # ----------------------------------------------------
+    # STAGE 4: INTERVAL FINISHED -> READY FOR DROP 2
+    # ----------------------------------------------------
+    led_red.value(0)    # Red LED OFF
+    led_green.value(1)  # Green LED ON: safe to apply drop 2
+    lcd.display("Ready for Drop 2", "Press to confirm")
+    print("\n[READY] Safe interval completed! Patient applies Drop 2.")
+
+    # Patient applies Drop 2 and presses switch to confirm
+    wait_for_switch_press()
+
+    # ----------------------------------------------------
+    # STAGE 5: DOSE COMPLETED -> ADVANCE TO NEXT SCHEDULE
+    # ----------------------------------------------------
+    lcd.display("Dose Completed!", "Great job!")
+    print("\n[SUCCESS] Both drops recorded. Dose logged successfully!")
+
+    # Keep Green LED and congratulations visible for 5 seconds
+    time.sleep(5)
+    led_green.value(0)
+
+    # Advance to the doctor's next scheduled time
+    current_dose_index = (current_dose_index + 1) % len(DOCTOR_SCHEDULE)
+    print(f"[SCHEDULE] Advancing to next prescribed time: {DOCTOR_SCHEDULE[current_dose_index]}")
+
+    # Automatically loops back to STAGE 1 with the new schedule!

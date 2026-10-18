@@ -1,7 +1,7 @@
 # Eye Spy 👁️
 
 **An eye-drop adherence monitor for post-cataract patients.**
-A smart bottle dock that knows when a dose is due and when the bottle was actually used, paired with a low-vision-friendly iPad web app for patients and their care providers.
+A bedside dock that walks the patient through each dose, paired with a low-vision-friendly iPad web app for patients and their care providers.
 
 Built in 36 hours at [SwampHacks XII](https://swamphacks-xii.devpost.com/) (University of Florida, October 2026).
 
@@ -15,8 +15,8 @@ After cataract surgery, patients typically go home with several different eye dr
 
 ## What Eye Spy does
 
-- **Reminds:** the dock lights up and sounds an alarm when a dose is due.
-- **Detects:** a switch under the bottle's cup records when the bottle is lifted and returned, so a dose is logged automatically, with no extra button press.
+- **Reminds:** the dock's LCD shows the next scheduled dose and tells the patient when it's time for their drops.
+- **Guides:** the patient presses a switch after each drop. The dock then counts down the safe wait before the second drop (red LED) and shows when it's ready (green LED).
 - **Encourages:** the iPad speaks a short, personalized reminder in a warm, grandparent-style sense of humor, generated with the Gemini API. Humor can be set to full, mild or off.
 - **Informs providers:** a provider view shows each patient's adherence over time (on time, late, too early, missed).
 - **Protects data:** Auth0 login with role-based access, so providers only see their own patients and patients only see their own data.
@@ -25,14 +25,14 @@ After cataract surgery, patients typically go home with several different eye dr
 
 ```mermaid
 flowchart TD
-    Box["Dock (ESP32, MicroPython)<br/>LEDs, alarm, lift switch"] --> API
+    Box["Dock (ESP32, MicroPython)<br/>LCD, LEDs, confirm switch<br/>standalone, no WiFi"]
     App["iPad web app (React)<br/>patient + provider views"] --> API
     API["Backend API (Python, FastAPI)<br/>validates tokens, holds secrets"] --> Auth0["Auth0<br/>login, roles"]
     API --> Tiger["Tiger Data (PostgreSQL)<br/>dose-event hypertable"]
     API --> Gemini["Gemini API<br/>reminder script + TTS"]
 ```
 
-- The **dock** polls the backend every 15 seconds to know when to alarm, and posts lift/return events.
+- The **dock** runs on its own: it has no WiFi and doesn't talk to the backend yet. The backend's `/device/*` endpoints are ready for a connected dock and can be tested with curl (see below).
 - The **iPad app** is a single React web app, added to the iPad home screen so it opens full-screen. The view (patient or provider) depends on the user's Auth0 role.
 - The **backend** sits between everything, so API keys and database credentials never ship inside the app or the device.
 
@@ -40,7 +40,7 @@ flowchart TD
 
 | Layer | Technology |
 | --- | --- |
-| Hardware | ESP32 DevKit V1, LEDs, speaker / buzzer, push-button lift switch, 3D-printed enclosure |
+| Hardware | ESP32 DevKit V1, LCD1602 (I2C), red + green LEDs, micro switch |
 | Firmware | MicroPython |
 | App | React (JavaScript), HTML, CSS, built with Vite; runs on the iPad from Safari's "Add to Home Screen" |
 | Backend | Python, FastAPI, psycopg |
@@ -57,7 +57,7 @@ Designed for older users with sensitive or blurry vision after surgery:
 - One clear action per screen for patients: a big "Hear reminder" button
 - Voice-first reminders that play automatically when a dose is due, so the patient doesn't need to read the screen
 - Results always shown as a symbol and a word, not color alone (✓ On time, ✕ Missed)
-- The dock has no small screen: just lights, sound and one large button
+- The dock uses a 2-line LCD, two LEDs and one switch, with one step shown at a time
 
 ## Data model
 
@@ -75,7 +75,7 @@ Each dose's flag is set by fixed rules in [backend/app/rules.py](backend/app/rul
 | --- | --- |
 | On time | bottle lifted within ±30 min of the scheduled time |
 | Early / late | lifted up to 2 h before / up to 3 h after |
-| Missed | not lifted within 3 h; until then the dock keeps alarming |
+| Missed | not lifted within 3 h; until then the dose shows as due |
 | Too frequent | a lift that matches no scheduled dose |
 | Spacing | drops scheduled at the same time are staggered 5 min apart |
 
@@ -109,22 +109,21 @@ Fill this table from a live run: `python evals/run_evals.py` with `GEMINI_API_KE
 
 | Part | Purpose |
 | --- | --- |
-| ESP32 DevKit V1 | WiFi microcontroller; talks to the backend |
-| Red + green LEDs (220 Ω resistors) | Status: waiting / dose due |
-| Speaker or buzzer | Alarm sound |
-| Push button under the cup | Lift switch: detects the bottle being picked up and returned |
-| Large push button | Silences the alarm for the current dose |
-| 3D-printed enclosure | Box, fitted bottle cup with plunger, large button cap |
+| ESP32 DevKit V1 | Microcontroller running the dose workflow |
+| LCD1602 with I2C backpack (PCF8574) | Shows the next dose, the alarm, the countdown between drops and "dose completed" |
+| Red LED (220 Ω resistor) | On during the wait between drop 1 and drop 2 |
+| Green LED (220 Ω resistor) | On when it's safe to apply drop 2, and for 5 s after the dose |
+| Micro switch | Patient presses it to confirm each drop |
 
-Wiring (full details in [hardware/README.md](hardware/README.md)):
+Wiring (full details and the step-by-step behaviour are in [hardware/README.md](hardware/README.md)):
 
 | Part | ESP32 pin |
 | --- | --- |
-| Green LED | GPIO 25 |
-| Red LED | GPIO 26 |
-| Buzzer / speaker | GPIO 27 |
-| Lift switch (to GND, pressed = bottle in cup) | GPIO 14 |
-| Silence button (to GND) | GPIO 33 |
+| Micro switch (to GND, pressed = LOW) | GPIO 13 |
+| Red LED | GPIO 25 |
+| Green LED | GPIO 26 |
+| LCD SDA | GPIO 21 |
+| LCD SCL | GPIO 22 |
 
 ## Getting started
 
@@ -199,11 +198,11 @@ Never commit real values. These files are listed in `.gitignore`.
 3. **Dock:**
    ```bash
    cd firmware
-   copy config_example.py config.py  # fill in WiFi, backend URL (laptop LAN IP), device token
-   mpremote cp config.py :config.py
    mpremote cp main.py :main.py
    mpremote reset
+   mpremote repl                     # watch the console output
    ```
+   The dock needs no WiFi or config file. Timings (`TIME_UNTIL_NEXT_DOSE`, `WAIT_BETWEEN_DROPS`) and the schedule are set at the top of `main.py`.
 
 > **iPad demos on a local network:** Auth0 login only works on HTTPS or `localhost`, not on `http://192.168.x.x`. For a local demo, set `VITE_DEV_BYPASS_SUB=auth0|demo-patient` in the app and `DEV_AUTH_BYPASS=true` in the backend. Otherwise host both the app and the backend on HTTPS. Never enable the bypass on a public server.
 
@@ -214,7 +213,7 @@ cd backend && python -m unittest discover -s tests -t .
 python evals/run_evals.py           # from the repo root; uses Gemini if GEMINI_API_KEY is set
 ```
 
-**Without the dock**, you can act as the dock with curl:
+**Testing the backend's dock endpoints:** the current dock firmware doesn't call these, but you can act as a connected dock with curl:
 
 ```bash
 curl -H "X-Device-Token: <DEVICE_TOKEN>" http://localhost:8000/device/status
@@ -234,9 +233,10 @@ curl -X POST -H "X-Device-Token: <DEVICE_TOKEN>" -H "Content-Type: application/j
 
 ## Known limitations
 
-- The dock has one cup, so it can't tell which bottle was lifted; a lift is matched to whichever dose is due.
-- Any lift that matches no dose is logged as "too frequent", even if the bottle was just moved.
-- Reminders only play while the app is open; the dock still alarms when it's closed.
+- The dock is standalone: doses confirmed on it are not sent to the backend, so the app and provider dashboard don't see them.
+- The dock has no real-time clock. Its alarm fires after a fixed standby timer, and the schedule shown on the LCD is a fixed list in `main.py`, not the patient's prescription from the database.
+- The dock has no buzzer, so its alarm is visual only (LCD text).
+- Reminders in the app only play while the app is open.
 
 See [BUILD_LOG.md](BUILD_LOG.md) for the full list.
 

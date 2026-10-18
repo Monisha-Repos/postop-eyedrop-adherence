@@ -85,8 +85,7 @@ app/
     patient/            # PatientHome, PatientSettings, TodayList
     provider/           # ProviderHome, PatientDetail, AdherenceChart
 firmware/
-  main.py               # dock logic
-  config_example.py     # WiFi / backend URL / device token
+  main.py               # standalone dock: LCD, LEDs, confirm switch (no WiFi)
 hardware/
   README.md             # pin map, wiring, enclosure notes
 evals/
@@ -201,14 +200,16 @@ Interactive docs are at `http://localhost:8000/docs` while the server runs.
 
 ### 4.8 Dock firmware (`firmware/main.py`)
 
-- Polls status every 15 s. When a dose is due: red LED on, green off, 3 beeps every 20 s.
-- **Lift detection:** the switch is debounced (50 ms), and the bottle must be out of the cup for **1.5 s** to count as a lift, so bumps are ignored. The return is reported when the bottle goes back.
-- Lifting the bottle or pressing the big button silences the alarm for that dose.
-- Events are queued (max 16) and retried, so WiFi drops don't lose doses.
-- No WiFi: red LED blinks slowly.
-- HTTPS backends work, but MicroPython doesn't verify certificates. That's fine for a hackathon, not for production.
+The firmware that runs on the dock is **standalone**: no WiFi, no backend calls. (The earlier networked version, which polled `/device/status` and posted lift events, was replaced because it was never used on the hardware. The backend's `/device/*` endpoints are kept for a future connected dock.)
 
-Pins (also in `hardware/README.md`): green LED GPIO 25, red LED GPIO 26, buzzer GPIO 27, lift switch GPIO 14, silence button GPIO 33.
+- **Standby:** the LCD shows the next time from a fixed `DOCTOR_SCHEDULE` list, then waits `TIME_UNTIL_NEXT_DOSE` seconds (10 s for the demo). There is no real-time clock, so it doesn't wait for the actual time of day.
+- **Alarm:** the LCD shows "Time to take your eye drops!" until the patient presses the switch after drop 1.
+- **Wait between drops:** red LED on while the LCD counts down `WAIT_BETWEEN_DROPS` (20 s demo, 300 s = 5 min real).
+- **Drop 2:** green LED on and "Ready for Drop 2"; the patient presses the switch again.
+- **Done:** "Dose Completed!" for 5 s, then the next schedule time.
+- The LCD1602 (PCF8574 I2C backpack) is found at 0x27 or 0x3F. If it's missing, the screen text is printed to the serial console.
+
+Pins (also in `hardware/README.md`): switch GPIO 13, red LED GPIO 25, green LED GPIO 26, LCD SDA GPIO 21, LCD SCL GPIO 22.
 
 ### 4.9 Evals (`evals/`)
 
@@ -292,14 +293,12 @@ On the iPad, open the URL in Safari, tap **Share → Add to Home Screen**, and o
 pip install esptool mpremote
 # Flash MicroPython (>= 1.20) for ESP32 from micropython.org, then:
 cd firmware
-copy config_example.py config.py  # WiFi, BACKEND_URL (laptop LAN IP), DEVICE_TOKEN
-mpremote cp config.py :config.py
 mpremote cp main.py :main.py
 mpremote reset
 mpremote repl                     # watch the logs
 ```
 
-**Testing without the dock:** send the dock's requests by hand.
+**Testing the backend's dock endpoints:** the current firmware doesn't call them, but you can send a connected dock's requests by hand.
 
 ```bash
 curl -H "X-Device-Token: <DEVICE_TOKEN>" http://localhost:8000/device/status
