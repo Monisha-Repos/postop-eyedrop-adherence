@@ -1,9 +1,14 @@
+
 import { Auth0Provider, useAuth0 } from "@auth0/auth0-react";
-import { createContext, useCallback, useContext, useMemo, useState } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useMemo,
+  useState,
+} from "react";
 import { config } from "./config.js";
 
-// One small interface for the rest of the app, whichever login is in use:
-// { isLoading, isAuthenticated, signIn, signOut, getToken }
 const AuthContext = createContext(null);
 
 export function useAuth() {
@@ -14,12 +19,15 @@ export function AuthProvider({ children }) {
   if (config.devBypassSub) {
     return <DevAuth>{children}</DevAuth>;
   }
+
   return (
     <Auth0Provider
       domain={config.auth0Domain}
       clientId={config.auth0ClientId}
-      authorizationParams={{ redirect_uri: window.location.origin, audience: config.auth0Audience }}
-      // Refresh tokens in localStorage: Safari blocks the third-party cookies silent login would need.
+      authorizationParams={{
+        redirect_uri: window.location.origin,
+        audience: config.auth0Audience,
+      }}
       useRefreshTokens
       cacheLocation="localstorage"
     >
@@ -29,34 +37,88 @@ export function AuthProvider({ children }) {
 }
 
 function Auth0Bridge({ children }) {
-  const { isLoading, isAuthenticated, loginWithRedirect, logout, getAccessTokenSilently } = useAuth0();
-  const getToken = useCallback(() => getAccessTokenSilently(), [getAccessTokenSilently]);
+  const {
+    isLoading,
+    isAuthenticated,
+    loginWithRedirect,
+    logout,
+    getAccessTokenSilently,
+  } = useAuth0();
+
+  const getToken = useCallback(
+    () => getAccessTokenSilently(),
+    [getAccessTokenSilently]
+  );
+
   const value = useMemo(
     () => ({
       isLoading,
       isAuthenticated,
       signIn: () => loginWithRedirect(),
-      signOut: () => logout({ logoutParams: { returnTo: window.location.origin } }),
+      signOut: () =>
+        logout({
+          logoutParams: {
+            returnTo: window.location.origin,
+          },
+        }),
       getToken,
     }),
-    [isLoading, isAuthenticated, loginWithRedirect, logout, getToken],
+    [
+      isLoading,
+      isAuthenticated,
+      loginWithRedirect,
+      logout,
+      getToken,
+    ]
   );
-  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+
+  return (
+    <AuthContext.Provider value={value}>
+      {children}
+    </AuthContext.Provider>
+  );
 }
 
-// Local demo without Auth0: sends "Bearer dev:<sub>", accepted only when the backend has DEV_AUTH_BYPASS=true.
+// Local demo authentication only.
+// Never enable DEV_AUTH_BYPASS in a public deployment.
 function DevAuth({ children }) {
-  const [signedIn, setSignedIn] = useState(true);
-  const getToken = useCallback(async () => `dev:${config.devBypassSub}`, []);
+  const [demoSub, setDemoSub] = useState(null);
+
+  const signIn = useCallback((role = "patient") => {
+    const sub =
+      role === "doctor"
+        ? "auth0|demo-provider"
+        : "auth0|demo-patient";
+
+    setDemoSub(sub);
+  }, []);
+
+  const signOut = useCallback(() => {
+    setDemoSub(null);
+  }, []);
+
+  const getToken = useCallback(async () => {
+    if (!demoSub) {
+      throw new Error("Not signed in");
+    }
+
+    return `dev:${demoSub}`;
+  }, [demoSub]);
+
   const value = useMemo(
     () => ({
       isLoading: false,
-      isAuthenticated: signedIn,
-      signIn: () => setSignedIn(true),
-      signOut: () => setSignedIn(false),
+      isAuthenticated: Boolean(demoSub),
+      signIn,
+      signOut,
       getToken,
     }),
-    [signedIn, getToken],
+    [demoSub, signIn, signOut, getToken]
   );
-  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+
+  return (
+    <AuthContext.Provider value={value}>
+      {children}
+    </AuthContext.Provider>
+  );
 }
